@@ -1,0 +1,398 @@
+from scipy.linalg import eigh
+
+eigenvalues, eigenvectors = eigh(L)
+idx = np.argsort(eigenvalues)
+eigenvalues = eigenvalues[idx]
+eigenvectors = eigenvectors[:, idx]
+
+print(f"\n{'='*80}")
+print(f"✓ EIGENDECOMPOSITION COMPLETE")
+print(f"{'='*80}")
+
+print(f"\nEigenvector matrix U shape: {eigenvectors.shape}")
+print(f"Eigenvalues shape: {eigenvalues.shape}")
+
+print(f"\n{'='*80}")
+print(f"ALL {len(eigenvalues)} EIGENVALUES (COMPLETE SPECTRUM):")
+print(f"{'='*80}\n")
+
+for i in range(len(eigenvalues)):
+    print(f"  λ_{i:2d}: {eigenvalues[i]:10.4f}")
+
+print(f"\n{'='*80}")
+print(f"FREQUENCY CHARACTERIZATION:")
+print(f"{'='*80}")
+
+print(f"\nLow frequencies (smooth, global modes):")
+for i in range(5):
+    print(f"  λ_{i}: {eigenvalues[i]:.4f}")
+
+print(f"\nHigh frequencies (oscillatory, local modes):")
+for i in range(len(eigenvalues)-5, len(eigenvalues)):
+    print(f"  λ_{i}: {eigenvalues[i]:.4f}")
+
+print(f"\nStatistics:")
+print(f"  Min eigenvalue: {eigenvalues.min():.4f}")
+print(f"  Max eigenvalue: {eigenvalues.max():.4f}")
+print(f"  Mean eigenvalue: {eigenvalues.mean():.4f}")
+
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import numpy as np
+
+fig = plt.figure(figsize=(14, 5))
+gs = gridspec.GridSpec(1, 3, width_ratios=[1.2, 1.5, 1], wspace=0.35)
+
+# ── Panel 1: Signal living on graph (bar heights = BOLD amplitude) ──
+ax1 = fig.add_subplot(gs[0])
+# Use first eigenvector (u1) as example "brain signal"
+signal = eigenvectors[:, 1]  # Fiedler vector as example signal
+colors = plt.cm.RdBu_r((signal - signal.min()) / (signal.max() - signal.min()))
+ax1.bar(range(len(signal)), signal, color=colors, edgecolor='black', linewidth=0.3)
+ax1.axhline(0, color='black', linewidth=0.8)
+ax1.set_xlabel('ROI Index', fontsize=10)
+ax1.set_ylabel('Signal Amplitude', fontsize=10)
+ax1.set_title('Brain Signal\n"living on" DMN graph', fontsize=10, fontweight='bold')
+
+
+sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(signal.min(), signal.max()))
+plt.colorbar(sm, ax=ax1, label='−          0          +', shrink=0.6)
+
+
+ax2 = fig.add_subplot(gs[1])
+n = len(eigenvalues)
+ev_norm = (eigenvalues - eigenvalues.mean()) / eigenvalues.max()
+ax2.plot(range(n), ev_norm, color='teal', linewidth=2)
+ax2.axhline(0, color='gray', linewidth=0.5, linestyle='--')
+
+low = n // 3
+high = 2 * n // 3
+ax2.axvspan(0,    low,  alpha=0.25, color='gold',             zorder=0, label='Low freq')
+ax2.axvspan(high, n-1,  alpha=0.25, color='mediumaquamarine', zorder=0, label='High freq')
+
+ax2.set_xlabel('eigenvalues (λ) - graph frequencies', fontsize=10)
+ax2.set_ylabel('Graph Spectrum', fontsize=10)
+ax2.set_title('DMN Graph Frequency Spectrum', fontsize=10, fontweight='bold')
+ax2.set_xlim(0, n-1)
+ax2.legend(fontsize=8)
+
+# ── Panel 3: Low vs High frequency eigenvectors ──
+ax3 = fig.add_subplot(gs[2])
+
+# Stack low-freq (u1) and high-freq (u_last) eigenvectors for comparison
+u_low  = eigenvectors[:, 1]   # 2nd eigenvector = lowest nontrivial = smoothest
+u_high = eigenvectors[:, -1]  # last = highest frequency = most oscillatory
+
+x = np.arange(len(u_low))
+ax3.plot(x, u_low,  color='goldenrod',      linewidth=2, label=f'u₁ (λ={eigenvalues[1]:.3f}) low freq')
+ax3.plot(x, u_high, color='mediumseagreen', linewidth=2, label=f'u_N (λ={eigenvalues[-1]:.3f}) high freq')
+ax3.axhline(0, color='gray', linewidth=0.5, linestyle='--')
+ax3.set_xlabel('ROI Index', fontsize=10)
+ax3.set_ylabel('Eigenvector amplitude', fontsize=10)
+ax3.set_title('Low vs High\nFrequency Harmonics', fontsize=10, fontweight='bold')
+ax3.legend(fontsize=7)
+
+plt.suptitle('DMN Graph Signal Processing — Figure 1D Recreation',
+             fontsize=12, fontweight='bold', y=1.02)
+plt.savefig('dmn_GSP_fig1D.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+ef compute_partial_corr_from_ts(ts):
+    
+    imputer = SimpleImputer(strategy='mean')
+    ts = imputer.fit_transform(ts)
+    n_t, n_r = ts.shape
+    ts_z = np.array([zscore(ts[:, i]) for i in range(n_r)]).T
+    cov, _ = ledoit_wolf(ts_z)
+    prec = np.linalg.pinv(cov)
+    n = prec.shape[0]
+    pc = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                pc[i, j] = 1.0
+            else:
+                denom = np.sqrt(prec[i, i] * prec[j, j])
+                pc[i, j] = -prec[i, j] / denom if denom > 1e-10 else 0.0
+    pc[pc < 0] = 0.0
+    np.fill_diagonal(pc, 0.0)
+    return pc
+
+def load_W(feat_dir, subj, net, ts):
+    
+    pc_file = feat_dir / f"{subj}_{net}_partial_corr.csv"
+    if pc_file.exists():
+        W = np.loadtxt(pc_file, delimiter=',')
+        # enforce same conventions as the fallback path: no negative
+        # edges, zero diagonal, symmetric
+        W = np.where(W < 0, 0.0, W)
+        np.fill_diagonal(W, 0.0)
+        W = (W + W.T) / 2.0
+        return W, 'precomputed'
+    else:
+        return compute_partial_corr_from_ts(ts), 'computed'
+
+def compute_gft(ts, W):
+    """Given raw time series ts (T x ROIs) and adjacency matrix W (ROIs x ROIs),
+    returns energy, eigenvalues, X_hat."""
+    if W.sum() == 0:
+        return None, None, None
+    D = np.diag(W.sum(axis=1))
+    L = D - W
+    eigenvalues, eigenvectors = eigh(L)
+    idx = np.argsort(eigenvalues)
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    X = ts.T  # (N_rois, T)
+    X_hat = eigenvectors.T @ X  # (N_modes, T)
+    energy = np.sum(X_hat**2, axis=1)
+    total = energy.sum()
+    if total > 0:
+        energy_norm = energy / total
+    else:
+        energy_norm = energy
+    return energy_norm, eigenvalues, X_hat
+
+# ── STEP 1: discover subjects and assign labels ──
+subject_dirs = sorted([d for d in BASE_DIR.iterdir() if d.is_dir()])
+
+subj_groups = defaultdict(list)
+for d in subject_dirs:
+    base = get_base_id(d.name)
+    subj_groups[base].append(d.name)
+
+print(f"Found {len(subject_dirs)} total sessions from {len(subj_groups)} unique subjects\n")
+
+# assign labels: smaller day = CN (baseline), larger day = DM (followup)
+labels = {}
+pairs = []
+for base, sessions in subj_groups.items():
+    if len(sessions) >= 2:
+        sessions_sorted = sorted(sessions, key=get_day)
+        labels[sessions_sorted[0]] = 'CN'
+        labels[sessions_sorted[1]] = 'DM'
+        pairs.append((sessions_sorted[0], sessions_sorted[1]))
+        print(f"  {base}: {sessions_sorted[0]} → CN  |  {sessions_sorted[1]} → DM")
+    elif len(sessions) == 1:
+        print(f"  {base}: only one session, skipping")
+
+print(f"\n{len(pairs)} paired subjects\n")
+
+# ── STEP 2: run GFT for all subjects x networks ──
+results = []
+gft_heatmaps = {}  # (subject, network) -> X_hat
+w_source_counts = defaultdict(int)  # track precomputed vs computed usage
+
+for subj_dir in subject_dirs:
+    subj = subj_dir.name
+    if subj not in labels:
+        continue
+    label = labels[subj]
+    print(f"Processing {subj} [{label}]")
+    feat_dir = subj_dir  # CSVs sit directly in the subject folder (no .feat subfolder)
+    row = {'Subject': subj, 'Label': label,
+           'BaseSubject': get_base_id(subj), 'Day': get_day(subj)}
+
+    for net in NETWORKS:
+        roi_file = feat_dir / f"{subj}_{net}.csv"
+        if not roi_file.exists():
+            print(f"    SKIP {net}: no file")
+            continue
+        try:
+            ts = np.loadtxt(roi_file, delimiter=',')
+            if ts.ndim == 1 or ts.shape[1] < 3:
+                continue
+
+            W, source = load_W(feat_dir, subj, net, ts)
+            w_source_counts[source] += 1
+
+            energy, evals, X_hat = compute_gft(ts, W)
+            if energy is None:
+                continue
+
+            N = len(energy)
+            gft_heatmaps[(subj, net)] = X_hat
+
+            for k in range(N):
+                row[f'{net}_E{k}'] = energy[k]
+
+            row[f'{net}_Entropy'] = float(-np.sum(energy[energy > 0] * np.log(energy[energy > 0] + 1e-12)))
+            row[f'{net}_LowE']    = float(energy[:N//3].sum())
+            row[f'{net}_HighE']   = float(energy[2*N//3:].sum())
+            row[f'{net}_Centroid']= float(np.sum(np.arange(N) * energy))
+            row[f'{net}_Nmodes']  = N
+            row[f'{net}_Wsource'] = source
+
+        except Exception as e:
+            print(f"    ERROR {net}: {e}")
+
+    results.append(row)
+
+df = pd.DataFrame(results)
+out_csv = WORK_DIR / "gft_CN_DM_all_networks.csv"
+df.to_csv(out_csv, index=False)
+print(f"\nSaved {len(df)} rows → {out_csv}")
+print(f"W-matrix source counts: {dict(w_source_counts)}\n")
+
+# ── STEP 3: summary stats ──
+print("="*70)
+print("MEAN FEATURES BY GROUP")
+print("="*70)
+features = []
+for net in NETWORKS:
+    for feat in ['Entropy', 'LowE', 'HighE', 'Centroid']:
+        col = f'{net}_{feat}'
+        if col in df.columns:
+            features.append(col)
+
+summary = df.groupby('Label')[features].mean()
+print(summary.to_string())
+
+# ── STEP 4: Mann-Whitney U tests ──
+print("\n" + "="*70)
+print("MANN-WHITNEY U TESTS (CN vs DM)")
+print("="*70)
+cn = df[df['Label']=='CN']
+dm = df[df['Label']=='DM']
+
+sig_results = []
+for col in features:
+    if col not in df.columns:
+        continue
+    a = cn[col].dropna().values
+    b = dm[col].dropna().values
+    if len(a) < 3 or len(b) < 3:
+        continue
+    stat, p = mannwhitneyu(a, b, alternative='two-sided')
+    sig = '***' if p<0.001 else '**' if p<0.01 else '*' if p<0.05 else ''
+    print(f"  {col:<30} p={p:.4f} {sig}  CN={a.mean():.3f}  DM={b.mean():.3f}")
+    sig_results.append({'Feature': col, 'p': p, 'CN_mean': a.mean(), 'DM_mean': b.mean()})
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+axes = axes.flatten()
+
+for idx, net in enumerate(NETWORKS):
+    ax = axes[idx]
+    cn_energies, dm_energies = [], []
+    n_modes = None
+
+    for _, row in df.iterrows():
+        cols = [c for c in df.columns if c.startswith(f'{net}_E') and c[len(net)+2:].isdigit()]
+        cols_sorted = sorted(cols, key=lambda c: int(c[len(net)+2:]))
+        if not cols_sorted:
+            continue
+        e = row[cols_sorted].values.astype(float)
+        if row['Label'] == 'CN':
+            cn_energies.append(e)
+        else:
+            dm_energies.append(e)
+        n_modes = len(e)
+
+    if not cn_energies or not dm_energies:
+        continue
+
+    cn_mean = np.nanmean(cn_energies, axis=0)
+    dm_mean = np.nanmean(dm_energies, axis=0)
+    cn_std  = np.nanstd(cn_energies, axis=0)
+    dm_std  = np.nanstd(dm_energies, axis=0)
+    x = np.arange(n_modes)
+
+    ax.plot(x, cn_mean, color='steelblue', linewidth=2, label='CN (baseline)')
+    ax.fill_between(x, cn_mean-cn_std, cn_mean+cn_std, alpha=0.2, color='steelblue')
+    ax.plot(x, dm_mean, color='crimson', linewidth=2, label='DM (followup)')
+    ax.fill_between(x, dm_mean-dm_std, dm_mean+dm_std, alpha=0.2, color='crimson')
+
+    ax.axvline(n_modes//3, color='gold', linestyle='--', linewidth=1, alpha=0.7)
+    ax.axvline(2*n_modes//3, color='teal', linestyle='--', linewidth=1, alpha=0.7)
+
+    ax.set_title(f'{net} — spectral energy profile', fontweight='bold')
+    ax.set_xlabel('Eigenmode k')
+    ax.set_ylabel('Normalised energy')
+    ax.legend(fontsize=8)
+    ax.set_xlim(0, n_modes-1)
+
+plt.suptitle('GFT Spectral Energy: CN (baseline) vs DM (follow-up)\nOASIS-3 CN→DM cohort',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.savefig(WORK_DIR / 'gft_energy_profiles.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Saved: gft_energy_profiles.png")
+
+# ── STEP 6: FIGURE 2 — GFT heatmaps side by side for one pair ──
+if pairs:
+    cn_subj, dm_subj = pairs[0]
+    fig, axes = plt.subplots(2, 6, figsize=(18, 6))
+
+    for col_idx, net in enumerate(NETWORKS):
+        for row_idx, (subj, lbl) in enumerate([(cn_subj,'CN'), (dm_subj,'DM')]):
+            ax = axes[row_idx][col_idx]
+            key = (subj, net)
+            if key in gft_heatmaps:
+                X_hat = gft_heatmaps[key]
+                vmax = np.percentile(np.abs(X_hat), 95)
+                ax.imshow(X_hat, aspect='auto', cmap='RdBu_r',
+                          vmin=-vmax, vmax=vmax)
+                ax.set_title(f'{net} [{lbl}]', fontsize=9, fontweight='bold')
+                ax.set_xlabel('Timepoint' if row_idx==1 else '')
+                ax.set_ylabel('Mode k' if col_idx==0 else '')
+            else:
+                ax.text(0.5, 0.5, 'no data', ha='center', va='center',
+                        transform=ax.transAxes, color='gray')
+                ax.set_title(f'{net} [{lbl}]', fontsize=9)
+
+    plt.suptitle(f'GFT Heatmaps X̂ = UᵀX\nTop: {cn_subj} [CN]   Bottom: {dm_subj} [DM]',
+                 fontsize=11, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(WORK_DIR / 'gft_heatmaps_pair.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("Saved: gft_heatmaps_pair.png")
+
+# ── STEP 7: FIGURE 3 — boxplots of key features ──
+fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+axes = axes.flatten()
+
+key_features = [f'{net}_Entropy' for net in NETWORKS]
+
+for idx, feat in enumerate(key_features):
+    ax = axes[idx]
+    if feat not in df.columns:
+        continue
+    cn_vals = df[df['Label']=='CN'][feat].dropna().values
+    dm_vals = df[df['Label']=='DM'][feat].dropna().values
+
+    bp = ax.boxplot([cn_vals, dm_vals], labels=['CN', 'DM'],
+                    patch_artist=True, widths=0.5)
+    bp['boxes'][0].set_facecolor('steelblue')
+    bp['boxes'][0].set_alpha(0.6)
+    bp['boxes'][1].set_facecolor('crimson')
+    bp['boxes'][1].set_alpha(0.6)
+
+    ax.scatter(np.ones(len(cn_vals))*1 + np.random.normal(0,0.05,len(cn_vals)),
+               cn_vals, color='steelblue', alpha=0.7, s=30, zorder=3)
+    ax.scatter(np.ones(len(dm_vals))*2 + np.random.normal(0,0.05,len(dm_vals)),
+               dm_vals, color='crimson', alpha=0.7, s=30, zorder=3)
+
+    if len(cn_vals)>=3 and len(dm_vals)>=3:
+        _, p = mannwhitneyu(cn_vals, dm_vals, alternative='two-sided')
+        sig = '***' if p<0.001 else '**' if p<0.01 else '*' if p<0.05 else f'p={p:.3f}'
+        ax.set_title(f'{feat}\n{sig}', fontweight='bold', fontsize=10)
+    else:
+        ax.set_title(feat, fontweight='bold', fontsize=10)
+
+    ax.set_ylabel('Spectral Entropy')
+
+plt.suptitle('Spectral Entropy per Network: CN vs DM',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.savefig(WORK_DIR / 'gft_entropy_boxplots.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Saved: gft_entropy_boxplots.png")
+
+print("\n" + "="*70)
+print("DONE. Output files:")
+print(f"  {WORK_DIR}/gft_CN_DM_all_networks.csv")
+print(f"  {WORK_DIR}/gft_energy_profiles.png")
+print(f"  {WORK_DIR}/gft_heatmaps_pair.png")
+print(f"  {WORK_DIR}/gft_entropy_boxplots.png")
+print("="*70)
